@@ -28,7 +28,10 @@ TOPIC_STATE = "skylight/state"
 TOPIC_AVAIL = "skylight/availability"
 DISCOVERY_TOPIC = "homeassistant/light/skylight/config"
 
-POLL_INTERVAL = 60
+# Wie oft der Ist-Zustand aktiv nachgepollt wird. Kuerzer = externe Aenderungen
+# (Fernbedienung, Stromausfall) erscheinen schneller in HA/HomeKit, kostet mehr
+# BLE-Verkehr. Ueber POLL_INTERVAL (Sekunden) einstellbar.
+POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL", "20"))
 RECONNECT_DELAY = 5
 
 

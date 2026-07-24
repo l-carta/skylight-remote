@@ -22,6 +22,13 @@ OP_ONOFF_GET = 0x8201
 OP_ONOFF_SET = 0x8202
 OP_ONOFF_STATUS = 0x8204
 
+# BLE-Writes (ohne Response) und Mesh-Nachrichten koennen verloren gehen.
+# Statt beim ersten Ausbleiben die ganze Proxy-Verbindung fallenzulassen (und
+# HA/HomeKit auf einem veralteten "AN" sitzen zu lassen), senden wir die
+# Anfrage mehrfach mit kurzem Timeout erneut, bevor wir aufgeben.
+STATUS_TIMEOUT = 3.0   # Sekunden pro Versuch
+STATUS_ATTEMPTS = 3    # Sendungen, bis wir aufgeben
+
 # Firmware-Quirk (am Geraet verifiziert 2026-07-23): Generic OnOff invertiert.
 # Wire 0x00 schaltet AN, 0x01 schaltet AUS - inkl. der Status-Antworten.
 ONOFF_INVERTED = True
@@ -64,21 +71,38 @@ class SkylightClient:
         self.cfg["tid"] = (self.cfg["tid"] + 1) & 0xFF
         return self.cfg["tid"]
 
+    async def _request(self, opcode: int, params: bytes) -> bytes:
+        """Sendet eine OnOff-Nachricht und wartet robust auf den Status.
+
+        Bleibt die Antwort aus, wird erneut gesendet (bis STATUS_ATTEMPTS).
+        Erst wenn keiner der Versuche eine Antwort bringt, wird der Fehler
+        durchgereicht - dann ist die Verbindung wirklich weg und der Aufrufer
+        markiert die Lampe als offline, statt einen falschen Zustand zu halten.
+        params fuer OnOff-SET enthaelt eine TID; wir behalten sie ueber alle
+        Versuche bei, damit der Server Wiederholungen als Duplikat erkennt und
+        nicht doppelt schaltet.
+        """
+        last_err = None
+        for _ in range(STATUS_ATTEMPTS):
+            await self._proxy.send_access(
+                self.cfg, self.app_key, True, self.dst, opcode, params)
+            try:
+                return await self._proxy.wait_status(
+                    self.app_key, True, OP_ONOFF_STATUS,
+                    timeout=STATUS_TIMEOUT)
+            except TimeoutError as e:
+                last_err = e
+        raise last_err
+
     async def set_power(self, on: bool) -> bool:
         """Schaltet an/aus, wartet auf Status. -> tatsaechlicher Zustand."""
-        await self._proxy.send_access(
-            self.cfg, self.app_key, True, self.dst, OP_ONOFF_SET,
-            bytes([onoff_wire(on), self._next_tid()]))
-        params = await self._proxy.wait_status(
-            self.app_key, True, OP_ONOFF_STATUS)
+        params = await self._request(
+            OP_ONOFF_SET, bytes([onoff_wire(on), self._next_tid()]))
         # Status: present(1) [, target(1), remaining(1)]. Bei laufendem
         # Uebergang ist der Ziel-Zustand massgeblich, nicht der Momentanwert.
         return onoff_phys(params[1] if len(params) >= 3 else params[0])
 
     async def get_power(self) -> bool:
         """Fragt den aktuellen Zustand ab. -> True=an."""
-        await self._proxy.send_access(
-            self.cfg, self.app_key, True, self.dst, OP_ONOFF_GET, b"")
-        params = await self._proxy.wait_status(
-            self.app_key, True, OP_ONOFF_STATUS)
+        params = await self._request(OP_ONOFF_GET, b"")
         return onoff_phys(params[0])

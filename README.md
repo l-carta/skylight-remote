@@ -84,8 +84,13 @@ python3 skylight.py provision  # frisch ins Mesh aufnehmen
 
 Konfiguration über Env-Variablen: `MQTT_HOST` (default `127.0.0.1`),
 `MQTT_USER` (default `skylight`), `MQTT_PASS` (default aus
-`~/apps/mosquitto/mqtt-credentials.txt`). Die Bridge pollt alle 60 s den
-Zustand und verbindet bei Abbruch nach 5 s neu.
+`~/apps/mosquitto/mqtt-credentials.txt`), `POLL_INTERVAL` (default `20` s).
+
+Statusabfragen werden bei Paketverlust mehrfach wiederholt; erst wenn gar keine
+Antwort mehr kommt, gilt die Lampe als offline (HA zeigt „unavailable",
+HomeKit „Reagiert nicht") — statt einen veralteten „AN"-Zustand zu halten. Der
+`POLL_INTERVAL` bestimmt, wie schnell eine per Fernbedienung ausgeschaltete
+Lampe in HA/HomeKit nachgezogen wird.
 
 ---
 
