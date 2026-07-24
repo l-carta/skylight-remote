@@ -28,10 +28,12 @@ TOPIC_STATE = "skylight/state"
 TOPIC_AVAIL = "skylight/availability"
 DISCOVERY_TOPIC = "homeassistant/light/skylight/config"
 
-# Wie oft der Ist-Zustand aktiv nachgepollt wird. Kuerzer = externe Aenderungen
-# (Fernbedienung, Stromausfall) erscheinen schneller in HA/HomeKit, kostet mehr
-# BLE-Verkehr. Ueber POLL_INTERVAL (Sekunden) einstellbar.
-POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL", "20"))
+# Standardmaessig rein ereignisgesteuert (0 = kein Poll): Zustand wird nach
+# jedem Kommando und einmalig bei jedem (Re-)Connect gespeichert. Das deckt
+# Command-Aenderungen und Stromausfall (Lampe kommt AN zurueck) ohne BLE-Dauer-
+# last ab. Nur wer ein Ausschalten per Original-Fernbedienung zeitnah in HA
+# sehen will, setzt POLL_INTERVAL (Sekunden) > 0.
+POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL", "0"))
 RECONNECT_DELAY = 5
 
 
@@ -104,13 +106,22 @@ class Bridge:
                 async with SkylightClient(self.cfg, log=lambda *_: None) as sky:
                     print("Mesh-Proxy verbunden", flush=True)
                     self.mq.publish(TOPIC_AVAIL, "online", retain=True)
+                    # Einmaliger Read pro (Re-)Connect: reicht ereignisgesteuert
+                    # voellig aus. Nach einem Stromausfall der Lampe reisst die
+                    # Verbindung ab; beim Reconnect lesen wir den Ist-Zustand
+                    # (dann AN, der physische Default) - ohne Dauer-Poll.
                     self.state = "ON" if await sky.get_power() else "OFF"
                     self._publish_state()
+                    sky.save()
                     last_poll = time.monotonic()
 
                     while True:
-                        timeout = max(1.0, POLL_INTERVAL
-                                      - (time.monotonic() - last_poll))
+                        # POLL_INTERVAL=0 -> rein ereignisgesteuert: wir warten
+                        # unbegrenzt auf das naechste Kommando (kein Poll).
+                        timeout = None
+                        if POLL_INTERVAL > 0:
+                            timeout = max(1.0, POLL_INTERVAL
+                                          - (time.monotonic() - last_poll))
                         try:
                             want_on = await asyncio.wait_for(
                                 self.cmd_queue.get(), timeout=timeout)
