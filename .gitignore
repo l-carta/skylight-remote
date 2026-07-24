@@ -13,3 +13,9 @@ venv/
 # Pi-Backup & Images - nicht committen
 pi-backup/
 skylight-mesh.json
+
+# Funk-Mitschnitte & Diagnose-Logs - koennen Geraete-Identitaeten enthalten
+*.hex
+*.snoop
+sniff.log
+diag.txt

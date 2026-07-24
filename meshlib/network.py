@@ -25,8 +25,13 @@ def _net_nonce(ctl_ttl: int, seq: int, src: int, iv_index: int) -> bytes:
 
 
 def _app_nonce(nonce_type: int, seq: int, src: int, dst: int,
-               iv_index: int) -> bytes:
-    return (bytes([nonce_type, 0x00]) + seq.to_bytes(3, "big")
+               iv_index: int, aszmic: int = 0) -> bytes:
+    # Byte 1 traegt das ASZMIC-Bit: bei SEGMENTIERTEN Access-Nachrichten mit
+    # SZMIC=1 (64-Bit TransMIC) muss es gesetzt sein, sonst schlaegt die
+    # CCM-(Ent)schluesselung fehl. Fuer unsegmentierte Nachrichten ist es 0.
+    # (Der Bug fiel beim Lesen der segmentierten Composition Data auf, siehe
+    # read_composition.py.)
+    return (bytes([nonce_type, (aszmic & 1) << 7]) + seq.to_bytes(3, "big")
             + src.to_bytes(2, "big") + dst.to_bytes(2, "big")
             + iv_index.to_bytes(4, "big"))
 

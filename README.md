@@ -36,11 +36,15 @@ nur ein Teil davon wirkt an der realen Lampe.
   **Firmware-Quirk:** OnOff ist **invertiert** — Wire `0x00` schaltet AN,
   `0x01` schaltet AUS (am Gerät verifiziert). Der Code kapselt das in
   `onoff_wire`/`onoff_phys`, nach außen ist alles normal.
-- ❌ **Lightness / CTL / HSL / Level / Szenen** — die Firmware *quittiert* diese
-  Nachrichten, **ignoriert sie aber**. Helligkeit, Weißton und Farbe laufen
-  ausschließlich über ein proprietäres Telink-Vendor-Protokoll der
-  Fernbedienung, das wir nicht erreichen. Deshalb exponieren wir die Lampe
-  bewusst als **reines On/Off-Licht**.
+- ❌ **Lightness / CTL / HSL / Level / Szenen / Modes** — die Firmware
+  *quittiert* diese Nachrichten mit korrektem Status, **treibt die LED aber
+  nicht damit an**. Von den 22 SIG-Modellen ist **nur `Generic OnOff` real
+  verdrahtet**; alle anderen sind ein **Schatten-Zustand**. Helligkeit, Weißton,
+  Farbe und die 6 Modes (5 Presets + „Day Rhythm") laufen ausschließlich über
+  ein **Telink-Vendor-Modell** (`Company 0x0211`, Model `0x0000`), dessen
+  Opcode + Payload wir nur aus einem **Firmware-Dump** bekämen. Deshalb
+  exponieren wir die Lampe bewusst als **reines On/Off-Licht**. Details +
+  ausgeschlossene Wege siehe [Die Reise](#die-reise-damit-future-me-die-sackgassen-kennt).
 
 ## Architektur
 
@@ -180,3 +184,48 @@ mit dem Mesh-Provisioning-Service `0x1827`. Erst mit der App **nRF Mesh**
 provisioniert und On/Off bestätigt, dann den Mesh-Stack selbst in Python
 nachgebaut (`meshlib/`) — inklusive eigenem PB-GATT-Provisioning, sodass wir
 kein fremdes Tool mehr brauchen.
+
+**Die Jagd nach Helligkeit/Modes ❌ (erschöpfend, alles ausgeschlossen)** — On/Off
+läuft, aber Helligkeit/Farbe/Modes nicht. Systematisch durchgespielt:
+
+- **Composition Data entschlüsselt** (`read_composition.py`) → dabei einen echten
+  **Bug im Stack** gefunden: `_app_nonce` setzte das **ASZMIC-Bit** nicht, sodass
+  segmentierte Nachrichten (SZMIC=1) nicht entschlüsselbar waren (jetzt gefixt).
+  Ergebnis: Node ist `CID 0x0211` (Telink) mit **2 Vendor-Modellen**
+  (`0x0211/0x0000`, `/0x0001`) neben den SIG-Modellen.
+- **Alle SIG-Modelle gebunden + getestet** (`model_probe.py`, `scene_probe.py`):
+  Level, Lightness, CTL, CTL-Temperatur, HSL, Hue, Saturation, **8 gespeicherte
+  Szenen via Scene Recall** — alle antworten mit Status, **keins bewegt die LED**.
+- **Alle 64 Vendor-Opcodes** `0xC0–0xFF` gefuzzt (`vendor_sweep.py`,
+  `final_probe.py`), inkl. `VD_RC_KEY_REPORT` (0xC0) mit Key-Codes und
+  strukturierten Payloads → nichts.
+- **On/Off-Pfad** in allen Varianten (Byte als Mode-Selektor, Wiederhol-Press,
+  Transition-Bytes) → nichts. **`0xFDA0`-Service** gelesen *und* beschrieben → nichts.
+- **Remote sniffen** (`sniff_mesh.py`): sie broadcastet nicht — sie ist ein
+  **Proxy-Client im Werksnetz** (andere Network-ID) und verbindet sich per GATT.
+  **Impersonation** (`imp_lamp.py`/`imp_capture.sh`, Pi als Fake-Lampe mit
+  gespoofter MAC): technisch möglich, aber die Remote sendet nur **werks-key-
+  verschlüsselte** Bytes → unlesbar. **Werks-NetKey erraten** gegen die bekannte
+  Network-ID (`netid_crack.py`, `k3`) → kein Default trifft, Key ist zufällig.
+- **Online-Recherche**: kein Community-RE (Produkt neu, Juni 2026), keine FCC-Doku.
+
+**Fazit:** Die Firmware treibt Helligkeit/Farbe/Modes **ausschließlich** über das
+Telink-Vendor-Modell an, dessen Opcode+Payload nur im Chip steht. Software-seitig
+ist alles ausgereizt. Einziger verbleibender Weg: **Firmware-Dump der Lampe**
+(Telink TLSR, SWS-Debug-Interface) → liefert Vendor-Opcode, Payload-Format *und*
+die Keys im Klartext; danach ginge die Steuerung über den bestehenden Stack.
+
+### Diagnose-/Research-Tools
+
+Aus der Jagd entstanden, für „future me" (Geräte-IDs kommen zur Laufzeit aus der
+Config/Adapter, nicht hardcodiert):
+
+| Tool | Zweck |
+|---|---|
+| `read_composition.py` | Composition Data auslesen (mit Segment-Reassembly) |
+| `model_probe.py` / `scene_probe.py` | SIG-Modelle binden + SET/Recall testen |
+| `vendor_probe.py` / `vendor_sweep.py` / `final_probe.py` | Vendor-Opcodes fuzzen |
+| `gatt_enum.py` / `fda0_probe.py` / `dump_lamp_adv.py` | GATT-Services + Advertising |
+| `sniff_mesh.py` / `decode_capture.py` / `bruteforce_netkey.py` | Adv-Mitschnitt + NetKey-Test |
+| `netid_crack.py` | Default-NetKeys gegen eine Network-ID prüfen |
+| `imp_lamp.py` / `imp_capture.sh` | Pi als Fake-Lampe (bless GATT-Server + MAC-Spoof) |
