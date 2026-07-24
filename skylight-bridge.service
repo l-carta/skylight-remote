@@ -1,0 +1,15 @@
+[Unit]
+Description=Skylight MQTT-Bridge (BLE Mesh <-> Home Assistant)
+After=network-online.target bluetooth.service docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/apps/skylight-remote
+ExecStart=/usr/bin/python3 /home/pi/apps/skylight-remote/mqtt_bridge.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

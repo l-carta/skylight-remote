@@ -1,0 +1,15 @@
+# Mesh-Netzwerkschlüssel - NIEMALS committen
+mesh-export.json
+*.key
+secrets.*
+.env
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Pi-Backup & Images - nicht committen
+pi-backup/
+skylight-mesh.json
