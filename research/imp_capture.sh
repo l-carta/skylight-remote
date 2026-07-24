@@ -33,4 +33,4 @@ sudo btmgmt power on  >/dev/null 2>&1; sleep 1
 echo "# MAC jetzt: $(sudo btmgmt info | grep -o 'addr [0-9A-F:]*' | head -1)"
 
 echo "# Fake-Lampe starten (${RUNTIME}s) ..."
-sudo ~/imp-venv/bin/python imp_lamp.py "$RUNTIME"
+sudo ~/imp-venv/bin/python research/imp_lamp.py "$RUNTIME"

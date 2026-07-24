@@ -12,6 +12,13 @@ Tests (Lampe beobachten):
 Bridge muss gestoppt sein.
 """
 
+# --- Pfad-Bootstrap: dieses Tool liegt in research/, der Stack + die
+# Config (skylight-mesh.json) liegen im Repo-Root eine Ebene hoeher. ---
+import os as _os, sys as _sys
+_ROOT = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+_sys.path.insert(0, _ROOT)
+_CFG = _os.path.join(_ROOT, "skylight-mesh.json")
+
 import asyncio
 
 from meshlib import network

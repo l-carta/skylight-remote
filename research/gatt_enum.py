@@ -18,6 +18,13 @@ den Bridge-Dienst stoppen:  sudo systemctl stop skylight-bridge
     python3 gatt_enum.py <MAC>
 """
 
+# --- Pfad-Bootstrap: dieses Tool liegt in research/, der Stack + die
+# Config (skylight-mesh.json) liegen im Repo-Root eine Ebene hoeher. ---
+import os as _os, sys as _sys
+_ROOT = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+_sys.path.insert(0, _ROOT)
+_CFG = _os.path.join(_ROOT, "skylight-mesh.json")
+
 import asyncio
 import json
 import sys
@@ -31,7 +38,7 @@ SIG_PROXY = "1828"
 
 def load_mac():
     try:
-        return json.load(open("skylight-mesh.json"))["mac"]
+        return json.load(open(_CFG))["mac"]
     except Exception:
         return None
 

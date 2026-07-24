@@ -13,6 +13,13 @@ WICHTIG: Bridge vorher stoppen (Lampe advertised nur unverbunden):
     python3 fda0_probe.py <MAC>
 """
 
+# --- Pfad-Bootstrap: dieses Tool liegt in research/, der Stack + die
+# Config (skylight-mesh.json) liegen im Repo-Root eine Ebene hoeher. ---
+import os as _os, sys as _sys
+_ROOT = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+_sys.path.insert(0, _ROOT)
+_CFG = _os.path.join(_ROOT, "skylight-mesh.json")
+
 import asyncio
 import json
 import sys
@@ -22,7 +29,7 @@ from bleak import BleakClient, BleakScanner
 
 def load_mac():
     try:
-        return json.load(open("skylight-mesh.json"))["mac"]
+        return json.load(open(_CFG))["mac"]
     except Exception:
         return None
 

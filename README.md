@@ -217,15 +217,8 @@ die Keys im Klartext; danach ginge die Steuerung über den bestehenden Stack.
 
 ### Diagnose-/Research-Tools
 
-Aus der Jagd entstanden, für „future me" (Geräte-IDs kommen zur Laufzeit aus der
-Config/Adapter, nicht hardcodiert):
-
-| Tool | Zweck |
-|---|---|
-| `read_composition.py` | Composition Data auslesen (mit Segment-Reassembly) |
-| `model_probe.py` / `scene_probe.py` | SIG-Modelle binden + SET/Recall testen |
-| `vendor_probe.py` / `vendor_sweep.py` / `final_probe.py` | Vendor-Opcodes fuzzen |
-| `gatt_enum.py` / `fda0_probe.py` / `dump_lamp_adv.py` | GATT-Services + Advertising |
-| `sniff_mesh.py` / `decode_capture.py` / `bruteforce_netkey.py` | Adv-Mitschnitt + NetKey-Test |
-| `netid_crack.py` | Default-NetKeys gegen eine Network-ID prüfen |
-| `imp_lamp.py` / `imp_capture.sh` | Pi als Fake-Lampe (bless GATT-Server + MAC-Spoof) |
+Das gesamte Analyse-Werkzeug aus dieser Jagd liegt in **[`research/`](research/)**
+(Composition-Reader, Modell-/Vendor-Prober, GATT-Enumeration, Adv-Sniffer,
+NetKey-Tests, Fake-Lampe). Geräte-IDs kommen zur Laufzeit aus Config/Adapter,
+nichts ist hardcodiert. Für den Normalbetrieb nicht nötig — Details +
+Ausführhinweise: [`research/README.md`](research/README.md).
