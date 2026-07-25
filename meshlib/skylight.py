@@ -29,17 +29,35 @@ OP_ONOFF_STATUS = 0x8204
 STATUS_TIMEOUT = 3.0   # Sekunden pro Versuch
 STATUS_ATTEMPTS = 3    # Sendungen, bis wir aufgeben
 
-# Firmware-Quirk (am Geraet verifiziert 2026-07-23): Generic OnOff invertiert.
-# Wire 0x00 schaltet AN, 0x01 schaltet AUS - inkl. der Status-Antworten.
-ONOFF_INVERTED = True
+# Firmware-Quirk (am Geraet gemessen, Wahrheitstabelle: research/onoff_truth.py).
+# Die beiden Richtungen benutzen NICHT dieselbe Kodierung:
+#
+#   SET   Wire 0x00 schaltet AN, 0x01 schaltet AUS -- invertiert. Die
+#         Status-Antwort auf ein SET spiegelt nur das gesendete Wire-Byte
+#         zurueck (SET 0x00 -> [00 00 41]), ist also ebenfalls invertiert und
+#         sagt nichts ueber den tatsaechlichen Zustand aus.
+#   GET   Die Status-Antwort auf ein GET meldet den echten Zustand dagegen
+#         STANDARDKONFORM: 0x01 = an, 0x00 = aus.
+#
+# Frueher wurde fuer beide Richtungen invertiert. Schalten funktionierte
+# dadurch, Lesen lieferte aber konsequent das Gegenteil -- Lampe aus, GET
+# liefert 0x00, invertiert -> HA zeigte "an".
+ONOFF_SET_INVERTED = True
 
 
 def onoff_wire(on: bool) -> int:
-    return int(on ^ ONOFF_INVERTED)
+    """Parameter-Byte fuer ein OnOff-SET."""
+    return int(on ^ ONOFF_SET_INVERTED)
+
+
+def onoff_echo(wire: int) -> bool:
+    """Status-Antwort auf ein SET -- gespiegeltes Wire-Byte, also invertiert."""
+    return bool(wire) ^ ONOFF_SET_INVERTED
 
 
 def onoff_phys(wire: int) -> bool:
-    return bool(wire) ^ ONOFF_INVERTED
+    """Status-Antwort auf ein GET -- echter Zustand, standardkonform."""
+    return bool(wire)
 
 
 class SkylightClient:
@@ -95,12 +113,14 @@ class SkylightClient:
         raise last_err
 
     async def set_power(self, on: bool) -> bool:
-        """Schaltet an/aus, wartet auf Status. -> tatsaechlicher Zustand."""
+        """Schaltet an/aus, wartet auf Status. -> quittierter Zustand."""
         params = await self._request(
             OP_ONOFF_SET, bytes([onoff_wire(on), self._next_tid()]))
         # Status: present(1) [, target(1), remaining(1)]. Bei laufendem
         # Uebergang ist der Ziel-Zustand massgeblich, nicht der Momentanwert.
-        return onoff_phys(params[1] if len(params) >= 3 else params[0])
+        # Achtung: Das ist die Quittung des Wire-Bytes, kein Messwert -- die
+        # Firmware spiegelt hier nur zurueck, was wir gesendet haben.
+        return onoff_echo(params[1] if len(params) >= 3 else params[0])
 
     async def get_power(self) -> bool:
         """Fragt den aktuellen Zustand ab. -> True=an."""

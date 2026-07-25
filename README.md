@@ -33,9 +33,19 @@ nur ein Teil davon wirkt an der realen Lampe.
 ## Was geht (und was nicht)
 
 - ✅ **Generic OnOff** — an/aus, zuverlässig.
-  **Firmware-Quirk:** OnOff ist **invertiert** — Wire `0x00` schaltet AN,
-  `0x01` schaltet AUS (am Gerät verifiziert). Der Code kapselt das in
-  `onoff_wire`/`onoff_phys`, nach außen ist alles normal.
+  **Firmware-Quirk:** Die beiden Richtungen benutzen **unterschiedliche
+  Kodierungen** — am Gerät gemessen mit
+  [`research/onoff_truth.py`](research/onoff_truth.py):
+
+  | Richtung | Kodierung |
+  |---|---|
+  | **SET** | invertiert: Wire `0x00` schaltet **AN**, `0x01` schaltet **AUS** |
+  | Status auf ein SET | spiegelt nur das gesendete Wire-Byte zurück (also ebenfalls invertiert) — **keine** Messung des echten Zustands |
+  | **GET** | standardkonform: `0x01` = an, `0x00` = aus |
+
+  Der Code kapselt das in `onoff_wire` / `onoff_echo` / `onoff_phys`, nach
+  außen ist alles normal. Wer beide Richtungen gleich behandelt, bekommt bei
+  jedem Lesen exakt das Gegenteil.
 - ❌ **Lightness / CTL / HSL / Level / Szenen / Modes** — die Firmware
   *quittiert* diese Nachrichten mit korrektem Status, **treibt die LED aber
   nicht damit an**. Von den 22 SIG-Modellen ist **nur `Generic OnOff` real

@@ -128,6 +128,13 @@ class Bridge:
                             on = await sky.set_power(want_on)
                             self.state = "ON" if on else "OFF"
                             self._publish_state()
+                            # Poll-Fenster auch nach einem Kommando neu
+                            # aufziehen. Sonst steht der naechste Poll sofort
+                            # an (last_poll waere uralt -> Timeout 1s) und
+                            # liest die Lampe MITTEN im Dimm-Uebergang; dieser
+                            # Zwischenwert ueberschreibt dann den gerade
+                            # korrekt gemeldeten Zustand.
+                            last_poll = time.monotonic()
                         except asyncio.TimeoutError:
                             on = await sky.get_power()
                             self.state = "ON" if on else "OFF"
