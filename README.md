@@ -117,8 +117,9 @@ will, setzt `POLL_INTERVAL` (Sekunden) > 0.
 
 ## Deployment (Raspberry Pi 4)
 
-Der Dienst läuft auf `pi@raspberrypi.local` unter
-`/home/pi/apps/skylight-remote` als systemd-Unit `skylight-bridge.service`.
+Der Dienst läuft auf dem Raspberry Pi (Host über `$PI_HOST` gesetzt, z. B. der
+Pi-Hostname/die IP im LAN) unter `/home/pi/apps/skylight-remote` als systemd-Unit
+`skylight-bridge.service`.
 
 ```bash
 # einmalig
@@ -224,6 +225,93 @@ Telink-Vendor-Modell an, dessen Opcode+Payload nur im Chip steht. Software-seiti
 ist alles ausgereizt. Einziger verbleibender Weg: **Firmware-Dump der Lampe**
 (Telink TLSR, SWS-Debug-Interface) → liefert Vendor-Opcode, Payload-Format *und*
 die Keys im Klartext; danach ginge die Steuerung über den bestehenden Stack.
+
+**Nachtrag: SDK identifiziert + beide dokumentierten Vendor-Wege sauber
+ausgeschlossen.** Ein zweiter, gründlicherer Anlauf hat das Fazit von „vermutlich"
+auf **rigoros bewiesen** gehoben:
+
+- **SDK-Zuordnung.** Die Lampe basiert auf dem Telink-SIG-Mesh-SDK
+  ([`Ai-Thinker-Open/Telink_SIG_Mesh`](https://github.com/Ai-Thinker-Open/Telink_SIG_Mesh),
+  Beispiel `RGBCW_Ali_Mesh`, `mesh/vendor_model.{c,h}`). Die zwei Vendor-Modelle
+  der Lampe sind dort `VENDOR_MD_LIGHT_S = 0x0000` und `VENDOR_MD_LIGHT_C = 0x0001`
+  — deckungsgleich. Damit kennen wir die **echten** Opcode-/Payload-Formate:
+  - **Attribut-Modus** (`VENDOR_OP_MODE_SPIRIT`): `0xD0` GET · `0xD1` SET ·
+    `0xD3` STATUS, Payload `[tid][attr_type 2B LE][value]`. IDs u. a.
+    `ATTR_ONOFF=0x0100`, `ATTR_TARGET_TEMP=0x010c`, `ATTR_SCENE_MODE=0xf004`.
+  - **Default-Modus** (`VENDOR_OP_MODE_DEFAULT`): `VD_RC_KEY_REPORT=0xC0`,
+    Payload `[code][00×7]` (8 Byte, aus `vd_cmd_key_report`); Antwort
+    `STATUS_NONE` (nie eine Bestätigung, nur die LED zeigt Wirkung).
+- **Beide Wege korrekt bedient → beide tot** (`vendor_attr2.py`,
+  `vendor_rc_sweep.py`): `ATTR_GET` über alle Kandidat-IDs mit *korrekter*
+  Struktur → **keine `0xD3`-Antwort** (Attribut-Modus nicht aktiv). Alle **256**
+  Key-Codes `0x00–0xFF` mit *korrekter* 8-Byte-Payload → **keine LED-Reaktion**.
+  (Die frühere Runde hatte den `tid` weggelassen bzw. nur 1–2 Byte gesendet — die
+  Payloads waren malformed, das erklärte die Funkstille *nicht* vollständig; jetzt
+  mit SDK-Struktur bestätigt: der Weg ist wirklich tot.)
+- **Passiver Voll-Mitschnitt** (`mesh_monitor.py`, ungefiltert, während On/Off-
+  Toggle): Die Lampe emittiert **nur `Generic OnOff Status` (0x8204)** — keine
+  Vendor-Publikation, kein Heartbeat, kein undekodierbarer Verkehr. Es gibt also
+  auch nichts passiv abzugreifen.
+- **Composition frisch gelesen:** **genau ein Element** (Element 0), 22 SIG- +
+  2 Vendor-Modelle — kein verstecktes zweites Element, an dem wir vorbeigefunkt
+  hätten.
+- **Remote nicht re-provisionierbar** (`scan_all.py`): Breit-Scan zeigt **kein**
+  `0x1827`-Advertisement, auch nicht bei Tastendruck → die Werks-Fernbedienung
+  lässt sich nicht in unser Netz aufnehmen, um ihre Mode-Kommandos dekodierbar
+  mitzuschneiden.
+
+**Verschärftes Fazit:** Das Telink-Gerüst ist da, aber **Philips hat die Vendor-
+Command-Tabelle durch eigene, proprietäre Opcodes/Payloads ersetzt** — weder der
+Attribut- noch der Key-Report-Weg des Standard-SDK wirkt. Was on-the-wire die
+Modes treibt, steht ausschließlich im Chip. Der Firmware-Dump bleibt der einzige
+Ground-Truth-Weg; bewusst **nicht** verfolgt (kein physischer Zugriff auf die
+Lampe, Read-Protection-Risiko).
+
+**Nachtrag 2: Die Remote als Angriffsfläche (Provisionee-Weg) — erschöpfend
+durchgespielt, an der Pi-Hardware gescheitert.** Idee: Wenn die Remote *uns*
+provisioniert, bekommen wir als Provisionee den **Werks-NetKey** im Klartext
+(ECDH), und damit ließen sich ihre Mode-Kommandos dekodieren/nachspielen.
+
+- **Die Remote *ist* ein Provisioner.** Nach einem Mesh-`Config Node Reset`
+  ([`node_reset.py`](research/node_reset.py)) wird die Lampe unprovisioniert und
+  von der Remote **sofort** wieder ins Werksnetz aufgenommen. (Das frühere
+  „nicht re-provisionierbar" galt nur für unseren *Fake*, nicht für den
+  Mechanismus.) Lampe↔Netz ist ein **Entweder-oder**: unser Netz *xor*
+  Werksnetz — beides gleichzeitig geht nicht.
+- **Die Remote ist ein TI-CC2640** (Hersteller *Shenzhen Jingxun*, ARM) und
+  exponiert den **TI-OAD-Firmware-Update-Service** (`f000ffc0`/`ffc1`/`ffc2`,
+  [`remote_probe.py`](research/remote_probe.py), [`remote_ffc0.py`](research/remote_ffc0.py)).
+  Ein Read auf `ffc1` leakte einmalig **ARM-Maschinencode** aus einem
+  uninitialisierten OAD-Puffer (Beweis: dort liegt Firmware) — reproduzierbar
+  ist aber nur ein **fester** Wert, kein Speicherfenster. OAD ist ein *Schreib*-
+  Kanal (signierte Images) → **kein** kostenloser Firmware-Read, und Schreiben
+  riskiert einen Brick. Kein gangbarer No-Solder-Dump.
+- **Voller Provisionee-Angriff** ([`imp_prov.py`](research/imp_prov.py),
+  [`imp_capture_prov.sh`](research/imp_capture_prov.sh)): Pi mimt die
+  zurückgesetzte Lampe **byte-genau** — MAC gespooft + Device-UUID aus dem
+  Telink-Muster (`<Prefix><reversed MAC><Suffix>`, aus der Adapter-MAC
+  abgeleitet) + korrektes `0x1827`-Advertising via `btmgmt`. Ergebnis: Die
+  Remote **initiiert kein Provisioning** zu uns — unter *keinem* Bearer:
+  - **PB-GATT** sauber ausgeschlossen (verbindbares, byte-verifiziertes Adv, die
+    Remote verbindet sich trotzdem nicht).
+  - **PB-ADV** ([`pbadv_probe.sh`](research/pbadv_probe.sh), rohes HCI, weil
+    BlueZ die Custom-Mesh-AD-Typen `0x2B`/`0x29` sonst blockt): Die Remote
+    broadcastet nur ihren Proxy + Secure Network Beacon, **keine** PB-ADV-
+    Antwort. PB-ADV verlangt *gleichzeitiges* enges Senden **und** Empfangen im
+    µs-Takt — das gibt der Broadcom-Funk im Pi + BlueZ nicht zuverlässig her.
+- **Proxy-Mitlesen** ([`remote_listen.py`](research/remote_listen.py)): Wir
+  *können* uns mit der Remote (Proxy-Server) verbinden und `2ade` abonnieren —
+  aber ohne Werks-NetKey lässt sich kein Proxy-Filter setzen, es kommen nur
+  **Secure Network Beacons** (Werks-Network-ID), kein Mode-Traffic.
+
+**Offene Frage:** Ob wirklich die *Remote* provisioniert — oder ein **Hub/Gateway**
+(CG-KIT) im Setup. Unverifiziert.
+
+**Endgültiges Fazit:** Auf dem Pi ist der Provisionee-Weg ausgereizt (PB-GATT
+ausgeschlossen, PB-ADV hardwareseitig nicht machbar). Weiterkommen bräuchte
+entweder den **Firmware-Dump** (SWS) oder einen **dedizierten nRF52840** (echtes
+PB-ADV/Sniffing). Die Modes bleiben in proprietärer, signierter Firmware +
+zufälligem Werks-Key — nicht software-seitig vom Pi aus lösbar.
 
 ### Diagnose-/Research-Tools
 
