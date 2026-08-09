@@ -55,10 +55,16 @@ ONOFF_SET_INVERTED = True
 # Genau das ist die Wartezeit, die als "die Lampe reagiert nicht sofort"
 # ankommt -- die Schaltkette davor braucht nur ~170 ms (Sensor -> Lampe quittiert).
 #
-# SKYLIGHT_TRANSITION_MS steuert das: 0 = sofort (Default), sonst Millisekunden.
-# "default" laesst die Felder weg und ueberlaesst der Lampe ihre Vorgabe -- der
-# Stand vor dieser Aenderung, als Rueckfallebene.
-TRANSITION_MS = os.environ.get("SKYLIGHT_TRANSITION_MS", "0")
+# GEMESSEN 2026-08-09, research/transition_probe.py: Die Firmware IGNORIERT
+# das Feld. Mit Transition Time 0x00 (sofort) und 0x03 (0,3 s) meldet die
+# Quittung unveraendert remaining=0x41 -- dieselbe Sekunde wie ohne die Bytes.
+# Damit reiht sich der Fade bei Lightness/CTL/Level/Szenen ein: quittiert,
+# aber wirkungslos. Der Uebergang ist per Mesh nicht erreichbar.
+#
+# Default deshalb "default" = Felder weglassen, also byte-gleich zu vorher.
+# Der Schalter bleibt stehen, damit die Messung reproduzierbar ist und die
+# Sackgasse dokumentiert -- nicht, weil er etwas bewirkt.
+TRANSITION_MS = os.environ.get("SKYLIGHT_TRANSITION_MS", "default")
 
 
 def transition_wire(ms: int) -> int:

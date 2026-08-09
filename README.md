@@ -212,6 +212,14 @@ läuft, aber Helligkeit/Farbe/Modes nicht. Systematisch durchgespielt:
   strukturierten Payloads → nichts.
 - **On/Off-Pfad** in allen Varianten (Byte als Mode-Selektor, Wiederhol-Press,
   Transition-Bytes) → nichts. **`0xFDA0`-Service** gelesen *und* beschrieben → nichts.
+- **Übergangszeit (Fade)** (`transition_probe.py`, 2026-08-09) → nichts. Die
+  Lampe schaltet nicht, sie fährt hoch; das kostet die spürbare Wartezeit,
+  während die Schaltkette davor nur ~170 ms braucht. Sie *kennt* Übergänge
+  nachweislich — die SET-Quittung `[present, target, remaining]` meldet
+  `remaining=0x41`, also 1 s. Aber die optionalen Felder Transition Time und
+  Delay im Generic OnOff Set ändern daran nichts: mit `0x00` (sofort) und
+  `0x03` (0,3 s) bleibt `remaining` bei `0x41`. Quittiert, ignoriert — wie
+  Lightness/CTL/Level. **Der Fade ist per Mesh nicht abstellbar.**
 - **Remote sniffen** (`sniff_mesh.py`): sie broadcastet nicht — sie ist ein
   **Proxy-Client im Werksnetz** (andere Network-ID) und verbindet sich per GATT.
   **Impersonation** (`imp_lamp.py`/`imp_capture.sh`, Pi als Fake-Lampe mit
