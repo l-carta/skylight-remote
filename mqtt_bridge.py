@@ -50,6 +50,19 @@ class Bridge:
         self.cfg = load_cfg(CONFIG_FILE)
         self.loop = None
         self.cmd_queue: asyncio.Queue = asyncio.Queue()
+        # Das gerade laufende Kommando. `cmd_queue.get()` ENTNIMMT es aus der
+        # Warteschlange; scheitert danach set_power() an der abgerissenen
+        # BLE-Strecke, war es bisher verloren - der Befehl verpuffte lautlos,
+        # waehrend HA laengst 200 gemeldet hatte. Hier bleibt er stehen, bis er
+        # nachweislich durch ist, und wird nach dem Reconnect nachgereicht.
+        self.offen = None
+        # SOLL und IST getrennt fuehren. Bisher gab es nur einen Zustand:
+        # den zuletzt gemeldeten. Geht ein Schaltbefehl auf der Funkstrecke
+        # verloren, glauben Bridge und HA danach dasselbe Falsche, und
+        # niemand merkt es - das Licht bleibt aus, obwohl ueberall 'an'
+        # steht. Mit dem Soll daneben faellt die Abweichung beim naechsten
+        # Nachmessen auf und wird von selbst geradegezogen.
+        self.soll = None
         self.state = "OFF"
 
         self.mq = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2,
@@ -115,6 +128,17 @@ class Bridge:
                     sky.save()
                     last_poll = time.monotonic()
 
+                    # Beim Abriss verlorenes Kommando zuerst nachholen.
+                    if self.offen is not None:
+                        print(f"reiche Kommando nach: {self.offen}", flush=True)
+                        on = await sky.set_power(self.offen)
+                        self.soll = "ON" if self.offen else "OFF"
+                        self.offen = None
+                        self.state = "ON" if on else "OFF"
+                        self._publish_state()
+                        sky.save()
+                        last_poll = time.monotonic()
+
                     while True:
                         # POLL_INTERVAL=0 -> rein ereignisgesteuert: wir warten
                         # unbegrenzt auf das naechste Kommando (kein Poll).
@@ -125,7 +149,11 @@ class Bridge:
                         try:
                             want_on = await asyncio.wait_for(
                                 self.cmd_queue.get(), timeout=timeout)
+                            # Erst nach dem Erfolg als erledigt markieren.
+                            self.offen = want_on
                             on = await sky.set_power(want_on)
+                            self.offen = None
+                            self.soll = "ON" if want_on else "OFF"
                             self.state = "ON" if on else "OFF"
                             self._publish_state()
                             # Poll-Fenster auch nach einem Kommando neu
@@ -136,8 +164,19 @@ class Bridge:
                             # korrekt gemeldeten Zustand.
                             last_poll = time.monotonic()
                         except asyncio.TimeoutError:
+                            # Nachmessen - und bei Abweichung vom Soll den
+                            # Befehl wiederholen. Das ist die eigentliche
+                            # Absicherung: Ein verlorener Schaltbefehl
+                            # korrigiert sich damit von selbst, spaetestens
+                            # nach einem Poll-Intervall.
                             on = await sky.get_power()
-                            self.state = "ON" if on else "OFF"
+                            ist = "ON" if on else "OFF"
+                            if self.soll is not None and ist != self.soll:
+                                print(f"Abweichung: soll={self.soll} ist={ist}"
+                                      " - sende nach", flush=True)
+                                on = await sky.set_power(self.soll == "ON")
+                                ist = "ON" if on else "OFF"
+                            self.state = ist
                             self._publish_state()
                             last_poll = time.monotonic()
                         # Seq-Nummer sofort persistieren: nach hartem
