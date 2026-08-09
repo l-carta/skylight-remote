@@ -44,6 +44,45 @@ STATUS_ATTEMPTS = 3    # Sendungen, bis wir aufgeben
 # liefert 0x00, invertiert -> HA zeigte "an".
 ONOFF_SET_INVERTED = True
 
+# Uebergangszeit (Fade). Ein Generic OnOff Set darf hinter OnOff und TID zwei
+# OPTIONALE Bytes fuehren: Transition Time und Delay. Ohne sie nimmt der Server
+# seine eigene Default Transition Time -- und die ist hier nicht 0: Die Lampe
+# quittiert ein SET mit [present, target, remaining] und meldet als remaining
+# 0x41, also "Aufloesung 1 s, 1 Schritt". Sie faehrt die Helligkeit hoch, statt
+# zu schalten. Am Helligkeitssensor im Bad gemessen (2026-08-09): nach dem
+# quittierten "an" stieg die Beleuchtungsstaerke ueber rund 3 s von 0 auf 65 lx.
+#
+# Genau das ist die Wartezeit, die als "die Lampe reagiert nicht sofort"
+# ankommt -- die Schaltkette davor braucht nur ~170 ms (Sensor -> Lampe quittiert).
+#
+# SKYLIGHT_TRANSITION_MS steuert das: 0 = sofort (Default), sonst Millisekunden.
+# "default" laesst die Felder weg und ueberlaesst der Lampe ihre Vorgabe -- der
+# Stand vor dieser Aenderung, als Rueckfallebene.
+TRANSITION_MS = os.environ.get("SKYLIGHT_TRANSITION_MS", "0")
+
+
+def transition_wire(ms: int) -> int:
+    """Millisekunden -> Transition-Time-Byte (Mesh 3.1.3).
+
+    Bits 5-0 Schrittzahl, Bits 7-6 Aufloesung (100 ms / 1 s / 10 s / 10 min).
+    0x00 = null Schritte = sofort, ohne Uebergang.
+    """
+    for res_bits, step_ms in ((0b00, 100), (0b01, 1000), (0b10, 10_000),
+                              (0b11, 600_000)):
+        steps = round(ms / step_ms)
+        if steps <= 62:
+            return (res_bits << 6) | steps
+    return 0b11 << 6 | 62  # laenger als 620 min geht nicht
+
+
+def transition_params() -> bytes:
+    """Die beiden optionalen Bytes -- oder leer, wenn die Lampe entscheiden soll."""
+    if TRANSITION_MS.strip().lower() in ("default", "none", ""):
+        return b""
+    # Delay (Wartezeit VOR dem Uebergang) bleibt 0: Wir wollen frueher fertig
+    # sein, nicht spaeter anfangen.
+    return bytes([transition_wire(int(TRANSITION_MS)), 0x00])
+
 
 def onoff_wire(on: bool) -> int:
     """Parameter-Byte fuer ein OnOff-SET."""
@@ -71,6 +110,8 @@ class SkylightClient:
         self.dst = self.cfg["unicast"]
         self.log = log
         self._proxy = None
+        # Restlaufzeit des Uebergangs aus der letzten SET-Quittung (roh).
+        self.last_remaining = None
 
     async def __aenter__(self):
         self._proxy = MeshProxy(self.cfg["mac"], self.ctx, self.cfg["src"],
@@ -115,11 +156,19 @@ class SkylightClient:
     async def set_power(self, on: bool) -> bool:
         """Schaltet an/aus, wartet auf Status. -> quittierter Zustand."""
         params = await self._request(
-            OP_ONOFF_SET, bytes([onoff_wire(on), self._next_tid()]))
+            OP_ONOFF_SET,
+            bytes([onoff_wire(on), self._next_tid()]) + transition_params())
         # Status: present(1) [, target(1), remaining(1)]. Bei laufendem
         # Uebergang ist der Ziel-Zustand massgeblich, nicht der Momentanwert.
         # Achtung: Das ist die Quittung des Wire-Bytes, kein Messwert -- die
         # Firmware spiegelt hier nur zurueck, was wir gesendet haben.
+        #
+        # remaining ist dagegen aussagekraeftig: Es ist die Restzeit des
+        # Uebergangs, den die Lampe tatsaechlich faehrt. Bleibt es trotz
+        # gesetzter Transition Time bei 0x41, hat die Firmware das Feld
+        # ignoriert -- dann ist der Fade nicht per Mesh abstellbar.
+        if len(params) >= 3:
+            self.last_remaining = params[2]
         return onoff_echo(params[1] if len(params) >= 3 else params[0])
 
     async def get_power(self) -> bool:
