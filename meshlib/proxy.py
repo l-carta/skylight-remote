@@ -68,16 +68,19 @@ class MeshProxy:
             PROXY_DATA_IN, bytes([0x00]) + pdu, response=False)
 
     async def send_access(self, seq_state, key: bytes, is_app_key: bool,
-                          dst: int, opcode: int, params: bytes, ttl: int = 5):
+                          dst: int, opcode: int, params: bytes, ttl: int = 5,
+                          src: int | None = None):
         """Sendet eine Access-Message; seq_state ist ein dict mit "seq",
-        das persistiert werden muss."""
+        das persistiert werden muss. src ueberschreibt die eigene Adresse
+        (Vendor-Befehle muessen von der Remote-Adresse kommen)."""
+        src = self.src if src is None else src
         access = network.encode_access(opcode, params)
         seq = seq_state["seq"]
         pdus = network.build_transport_pdus(
-            self.ctx, key, is_app_key, seq, self.src, dst, access)
+            self.ctx, key, is_app_key, seq, src, dst, access)
         for i, transport in enumerate(pdus):
             net = network.encode_network_pdu(
-                self.ctx, 0, ttl, seq + i, self.src, dst, transport)
+                self.ctx, 0, ttl, seq + i, src, dst, transport)
             await self.send_network_pdu(net)
             await asyncio.sleep(0.05)
         seq_state["seq"] = seq + len(pdus)

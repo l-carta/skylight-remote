@@ -2,11 +2,20 @@
 
 Wird von der CLI (skylight.py) und der MQTT-Bridge (mqtt_bridge.py) genutzt.
 
-Bewusst schlank: An der realen Lampe wirkt nur Generic OnOff (und das
+An der realen Lampe wirkt von den SIG-Modellen nur Generic OnOff (und das
 INVERTIERT). Lightness/CTL/Level/Szenen werden von der Firmware quittiert,
-aber ignoriert - die Modi laufen ausschliesslich ueber das proprietaere
-Telink-Vendor-Protokoll der Fernbedienung (nicht erreichbar). Details siehe
-README, Abschnitt "Was geht (und was nicht)".
+aber ignoriert. Modi, Dimmen und VitaUp laufen ueber das Vendor-Protokoll der
+Fernbedienung (Company 0x0211) - am Debug-UART des BLE-Moduls entschluesselt
+(2026-09-29):
+
+  - Die Firmware nimmt Vendor-Befehle nur von der Quelladresse der Remote an
+    (0x7FFF, Log "is_match_group_id"). Im eigenen Netz duerfen wir sie setzen.
+  - Payload: [tid][sub][..], 8 Byte.
+      C9 [tid] 04 00 [modus] ...   Szene/Modus (I2C cmd 03), 1..6
+      C8 [tid] 01 [schritt] ...    Dimmen (I2C cmd 01): 0 runter, 1 hoch,
+                                   2/3 = gehalten runter/hoch (groesserer Schritt)
+      E0 [tid] 01 00 00 ...        VitaUp umschalten (I2C cmd 09)
+  - Vendor-Befehle werden nicht quittiert (kein Status).
 """
 
 import os
@@ -21,6 +30,28 @@ CONFIG_FILE = os.path.join(os.path.dirname(os.path.dirname(__file__)),
 OP_ONOFF_GET = 0x8201
 OP_ONOFF_SET = 0x8202
 OP_ONOFF_STATUS = 0x8204
+
+# Vendor-Protokoll der Fernbedienung (siehe Modul-Docstring).
+VENDOR_COMPANY = 0x0211
+REMOTE_SRC = 0x7FFF
+VENDOR_PAYLOAD_LEN = 8
+OP_VD_LIGHT = 0xC8      # Sub 01: Dimmen
+OP_VD_SCENE = 0xC9      # Sub 04: Modus
+OP_VD_EXTRA = 0xE0      # opid 01: VitaUp
+SUB_DIM = 0x01
+SUB_SCENE = 0x04
+OPID_VITAUP = 0x01
+
+# Modus-Nummern wie von der Remote gesendet (Debug-Log "trigger scene mode").
+SCENES = {
+    "Refresh": 1,
+    "Energize": 2,
+    "Focus": 3,
+    "Relax": 4,
+    "Rest": 5,
+    "Auto Rhythm": 6,
+}
+DIM_DOWN, DIM_UP, DIM_DOWN_BIG, DIM_UP_BIG = 0, 1, 2, 3
 
 # BLE-Writes (ohne Response) und Mesh-Nachrichten koennen verloren gehen.
 # Statt beim ersten Ausbleiben die ganze Proxy-Verbindung fallenzulassen (und
@@ -181,3 +212,24 @@ class SkylightClient:
         """Fragt den aktuellen Zustand ab. -> True=an."""
         params = await self._request(OP_ONOFF_GET, b"")
         return onoff_phys(params[0])
+
+    async def _vendor(self, op_byte: int, body: bytes):
+        """Sendet einen Remote-Befehl als 0x7FFF. Ohne Quittung - die Lampe
+        antwortet auf Vendor-Befehle nicht."""
+        params = (bytes([self._next_tid()]) + body).ljust(
+            VENDOR_PAYLOAD_LEN, b"\x00")
+        await self._proxy.send_access(
+            self.cfg, self.app_key, True, self.dst,
+            (op_byte << 16) | VENDOR_COMPANY, params, src=REMOTE_SRC)
+
+    async def set_scene(self, name: str):
+        """Startet einen Modus (Refresh ... Auto Rhythm)."""
+        await self._vendor(OP_VD_SCENE, bytes([SUB_SCENE, 0x00, SCENES[name]]))
+
+    async def dim(self, step: int):
+        """Ein Dimmschritt, siehe DIM_*."""
+        await self._vendor(OP_VD_LIGHT, bytes([SUB_DIM, step]))
+
+    async def vitaup_toggle(self):
+        """Schaltet VitaUp um (die Firmware fuehrt den Zustand selbst)."""
+        await self._vendor(OP_VD_EXTRA, bytes([OPID_VITAUP, 0x00, 0x00]))
