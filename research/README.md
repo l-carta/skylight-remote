@@ -39,6 +39,7 @@ sudo systemctl start skylight-bridge
 | `vendor_sweep.py` | Vendor-Opcode-Bereich mit Kontrast-Payloads durchfahren |
 | `vendor_attr2.py` | Attribut-Probe mit **korrekter** SDK-Struktur `[tid][attr 2B LE][value]`, sucht `ATTR_STATUS 0xD3` |
 | `vendor_rc_sweep.py` | `VD_RC_KEY_REPORT 0xC0` korrekt (8-Byte-Payload) emulieren, Code-Sweep 0x00–0xFF |
+| `probe_send.py` | Eine beliebige Access-Message senden, mit Verzögerung nach dem Verbinden (zum Scharfschalten eines Logic-Analyzers/Oszis am Debug-UART). Quelladresse per Env `SRC` überschreibbar, z. B. `SRC=0x7fff … probe_send.py c90211 TID04000300000000` = Modus Focus |
 | `final_probe.py` | „offene Ecken": Power-Level, RC-Key-Sweep, 0xFDA0-Writes |
 | `onoff_modes.py` | OnOff-Pfad-Varianten als Mode-Selektor testen |
 | `gatt_enum.py` | GATT-Services/Characteristics der Lampe auflisten |

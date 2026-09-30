@@ -5,8 +5,10 @@ Haelt eine dauerhafte Proxy-Verbindung zur Lampe, meldet sich per
 MQTT-Discovery bei HA als schaltbares Licht an und setzt HA-Kommandos
 (on/off) in Mesh-Nachrichten um. Zustand wird zurueckgemeldet.
 
-Die Skylight kann von aussen nur an/aus (siehe README) - daher exponieren
-wir sie bewusst als reines On/Off-Licht, damit HA nichts Nutzloses anzeigt.
+Exponiert: On/Off-Licht mit den Remote-Modi als Effekte, dazu Buttons fuer
+Dimmen und VitaUp (Vendor-Protokoll, siehe meshlib/skylight.py). Helligkeit
+und Farbtemperatur als absolute Werte wirken an der Lampe nicht und werden
+deshalb nicht angeboten.
 
     MQTT_HOST (default 127.0.0.1), MQTT_USER (default skylight),
     MQTT_PASS (default: aus ~/apps/mosquitto/mqtt-credentials.txt)
@@ -19,14 +21,29 @@ import time
 
 import paho.mqtt.client as mqtt
 
-from meshlib.skylight import SkylightClient
+from meshlib.skylight import (SkylightClient, SCENES, DIM_UP, DIM_DOWN)
 from meshlib.state import load_cfg, save_cfg
 from meshlib.skylight import CONFIG_FILE
 
 TOPIC_SET = "skylight/set"
 TOPIC_STATE = "skylight/state"
 TOPIC_AVAIL = "skylight/availability"
+TOPIC_BUTTON = "skylight/button/"          # + Name aus BUTTONS
 DISCOVERY_TOPIC = "homeassistant/light/skylight/config"
+BUTTON_DISCOVERY = "homeassistant/button/skylight_{}/config"
+
+# MQTT-Buttons: Name -> (Anzeigename, Icon)
+BUTTONS = {
+    "dim_up": ("Dim up", "mdi:brightness-7"),
+    "dim_down": ("Dim down", "mdi:brightness-5"),
+    "vitaup": ("VitaUp toggle", "mdi:white-balance-sunny"),
+}
+DEVICE = {
+    "identifiers": ["skylight"],
+    "name": "Philips Skylight",
+    "manufacturer": "Signify",
+    "model": "Skylight (Telink, Bluetooth SIG Mesh)",
+}
 
 # Standardmaessig rein ereignisgesteuert (0 = kein Poll): Zustand wird nach
 # jedem Kommando und einmalig bei jedem (Re-)Connect gespeichert. Das deckt
@@ -64,6 +81,9 @@ class Bridge:
         # Nachmessen auf und wird von selbst geradegezogen.
         self.soll = None
         self.state = "OFF"
+        # Zuletzt gestarteter Modus. Die Lampe meldet ihn nicht zurueck,
+        # das ist also nur unser eigener letzter Befehl.
+        self.effect = None
 
         self.mq = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2,
                               client_id="skylight-bridge")
@@ -77,35 +97,83 @@ class Bridge:
 
     def _on_connect(self, client, userdata, flags, reason, props):
         print(f"MQTT verbunden ({reason})", flush=True)
+        mac_id = self.cfg["mac"].replace(":", "").lower()
         client.subscribe(TOPIC_SET)
+        client.subscribe(TOPIC_BUTTON + "+")
         client.publish(DISCOVERY_TOPIC, json.dumps({
             "name": "Skylight",
-            "unique_id": "skylight_" + self.cfg["mac"].replace(":", "").lower(),
+            "unique_id": "skylight_" + mac_id,
             "schema": "json",
             "command_topic": TOPIC_SET,
             "state_topic": TOPIC_STATE,
             "availability_topic": TOPIC_AVAIL,
-            "device": {
-                "identifiers": ["skylight"],
-                "name": "Philips Skylight",
-                "manufacturer": "Signify",
-                "model": "Skylight (Telink, Bluetooth SIG Mesh)",
-            },
+            "supported_color_modes": ["onoff"],
+            "effect": True,
+            "effect_list": list(SCENES),
+            "device": DEVICE,
         }), retain=True)
+        for key, (name, icon) in BUTTONS.items():
+            client.publish(BUTTON_DISCOVERY.format(key), json.dumps({
+                "name": name,
+                "unique_id": f"skylight_{mac_id}_{key}",
+                "command_topic": TOPIC_BUTTON + key,
+                "availability_topic": TOPIC_AVAIL,
+                "icon": icon,
+                "device": DEVICE,
+            }), retain=True)
+
+    def _queue(self, cmd):
+        asyncio.run_coroutine_threadsafe(self.cmd_queue.put(cmd), self.loop)
 
     def _on_message(self, client, userdata, msg):
+        if msg.topic.startswith(TOPIC_BUTTON):
+            key = msg.topic[len(TOPIC_BUTTON):]
+            if key in BUTTONS:
+                self._queue(("button", key))
+            return
         try:
             payload = json.loads(msg.payload)
         except ValueError:
             print(f"Ungueltiges JSON: {msg.payload!r}", flush=True)
             return
-        if "state" in payload:
-            asyncio.run_coroutine_threadsafe(
-                self.cmd_queue.put(payload["state"] == "ON"), self.loop)
+        # Ein Effekt kommt von HA als {"state": "ON", "effect": ...}.
+        if payload.get("effect") in SCENES:
+            self._queue(("effect", payload["effect"]))
+        elif "state" in payload:
+            self._queue(("power", payload["state"] == "ON"))
 
     def _publish_state(self):
-        self.mq.publish(TOPIC_STATE, json.dumps({"state": self.state}),
-                        retain=True)
+        msg = {"state": self.state}
+        if self.state == "ON" and self.effect:
+            msg["effect"] = self.effect
+        self.mq.publish(TOPIC_STATE, json.dumps(msg), retain=True)
+
+    async def _execute(self, sky, cmd):
+        """Fuehrt ein Kommando aus der Queue aus und aktualisiert den Zustand."""
+        kind, arg = cmd
+        if kind == "power":
+            on = await sky.set_power(arg)
+            self.soll = "ON" if arg else "OFF"
+            self.state = "ON" if on else "OFF"
+            if not arg:
+                self.effect = None
+        elif kind == "effect":
+            # Aus dem Aus-Zustand erst einschalten; ob ein Modus-Befehl die
+            # Lampe selbst einschaltet, ist nicht verifiziert.
+            if self.state != "ON":
+                on = await sky.set_power(True)
+                self.soll = "ON"
+                self.state = "ON" if on else "OFF"
+            await sky.set_scene(arg)
+            self.effect = arg
+        elif kind == "button":
+            if arg == "dim_up":
+                await sky.dim(DIM_UP)
+            elif arg == "dim_down":
+                await sky.dim(DIM_DOWN)
+            elif arg == "vitaup":
+                await sky.vitaup_toggle()
+        self._publish_state()
 
     # ---------- Hauptschleife ----------
 
@@ -131,11 +199,8 @@ class Bridge:
                     # Beim Abriss verlorenes Kommando zuerst nachholen.
                     if self.offen is not None:
                         print(f"reiche Kommando nach: {self.offen}", flush=True)
-                        on = await sky.set_power(self.offen)
-                        self.soll = "ON" if self.offen else "OFF"
+                        await self._execute(sky, self.offen)
                         self.offen = None
-                        self.state = "ON" if on else "OFF"
-                        self._publish_state()
                         sky.save()
                         last_poll = time.monotonic()
 
@@ -147,15 +212,12 @@ class Bridge:
                             timeout = max(1.0, POLL_INTERVAL
                                           - (time.monotonic() - last_poll))
                         try:
-                            want_on = await asyncio.wait_for(
+                            cmd = await asyncio.wait_for(
                                 self.cmd_queue.get(), timeout=timeout)
                             # Erst nach dem Erfolg als erledigt markieren.
-                            self.offen = want_on
-                            on = await sky.set_power(want_on)
+                            self.offen = cmd
+                            await self._execute(sky, cmd)
                             self.offen = None
-                            self.soll = "ON" if want_on else "OFF"
-                            self.state = "ON" if on else "OFF"
-                            self._publish_state()
                             # Poll-Fenster auch nach einem Kommando neu
                             # aufziehen. Sonst steht der naechste Poll sofort
                             # an (last_poll waere uralt -> Timeout 1s) und

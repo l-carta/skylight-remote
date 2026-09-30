@@ -29,6 +29,11 @@ MODELS = {                 # SIG-Model-IDs, an die der AppKey gebunden wird
     0x1303: "Light CTL Server",
     0x1307: "Light HSL Server",
 }
+VENDOR_COMPANY = 0x0211
+VENDOR_MODELS = {          # Vendor-Modelle fuer Modi/Dimmen/VitaUp
+    0x0000: "Vendor 0x0211/0x0000",
+    0x0001: "Vendor 0x0211/0x0001",
+}
 
 OP_APPKEY_ADD = 0x00
 OP_APPKEY_STATUS = 0x8003
@@ -115,9 +120,12 @@ async def main():
             raise SystemExit(f"AppKey Add fehlgeschlagen: 0x{status[0]:02x}")
         print("  AppKey ok")
 
-        for model_id, name in MODELS.items():
-            params = (LAMP_ADDR.to_bytes(2, "little") + b"\x00\x00"
-                      + model_id.to_bytes(2, "little"))
+        # Vendor-Model-IDs sind 4 Byte: Company-ID + Model-ID, je little-endian.
+        binds = [(m.to_bytes(2, "little"), n) for m, n in MODELS.items()]
+        binds += [(VENDOR_COMPANY.to_bytes(2, "little") + m.to_bytes(2, "little"), n)
+                  for m, n in VENDOR_MODELS.items()]
+        for model_id, name in binds:
+            params = (LAMP_ADDR.to_bytes(2, "little") + b"\x00\x00" + model_id)
             await proxy.send_access(seq_state, dev_key, False, LAMP_ADDR,
                                     OP_MODEL_APP_BIND, params)
             status = await proxy.wait_status(dev_key, False,

@@ -10,8 +10,9 @@ Lampe ins Netz (PB-GATT-Provisioning), verbindet sich als **Proxy** und
 exponiert sie über **MQTT** an Home Assistant.
 
 **Status:** ✅ läuft. An/Aus ist zuverlässig steuerbar — als CLI *und* als
-MQTT-Bridge (systemd-Dienst auf einem Raspberry Pi 4). Siehe [Was geht (und
-was nicht)](#was-geht-und-was-nicht).
+MQTT-Bridge (systemd-Dienst auf einem Raspberry Pi 4). Seit dem Entschlüsseln
+des Vendor-Protokolls auch die **6 Modi, Dimmen und VitaUp** wie mit der
+Fernbedienung. Siehe [Was geht (und was nicht)](#was-geht-und-was-nicht).
 
 ---
 
@@ -22,9 +23,19 @@ was nicht)](#was-geht-und-was-nicht).
 | Produkt | Philips Skylight (Signify) |
 | Funk | **Bluetooth LE / SIG Mesh, 2,4 GHz** |
 | BLE-Name | `BK_MESH_light` |
-| Chip | Telink |
+| Chip | BLE-Modul `XFHIS-379` mit **Beken BK3633** (Alibaba-„Genie"-Mesh-SDK, meldet Company-ID `0x0211` Telink) |
+| Licht-Controller | **GigaDevice GD32E230K8**, per I²C vom BLE-Modul gesteuert |
 | Provisioning | Mesh Provisioning Service `0x1827` |
 | Proxy | Mesh Proxy Service `0x1828` |
+
+Die Steuerplatine („Blue Sky Control Board V1.2") trennt Funk und Licht: Das
+BLE-Modul entschlüsselt die Mesh-Nachrichten und schickt dem GD32 kurze
+I²C-Befehle `[cmd, par1, par2, crc]` an Adresse `0xA6`. Erst der GD32 treibt
+LEDs und UV-Modul. Das BLE-Modul hat einen **Debug-UART** (Pad `BLE_RX`,
+1 Mbaud 8N1), der jede empfangene Nachricht und jeden I²C-Befehl im Klartext
+loggt — darüber ist das Vendor-Protokoll unten entschlüsselt. **Achtung:** Beim
+Booten gibt dieses Log auch die Mesh-Schlüssel aus; Mitschnitte nicht
+veröffentlichen.
 
 Die Composition Data meldet Standard-SIG-Modelle (`Generic OnOff`,
 `Light Lightness`, `Light CTL`, `Light HSL`, `Scene`, `Scheduler`, …) — aber
@@ -46,15 +57,41 @@ nur ein Teil davon wirkt an der realen Lampe.
   Der Code kapselt das in `onoff_wire` / `onoff_echo` / `onoff_phys`, nach
   außen ist alles normal. Wer beide Richtungen gleich behandelt, bekommt bei
   jedem Lesen exakt das Gegenteil.
-- ❌ **Lightness / CTL / HSL / Level / Szenen / Modes** — die Firmware
-  *quittiert* diese Nachrichten mit korrektem Status, **treibt die LED aber
-  nicht damit an**. Von den 22 SIG-Modellen ist **nur `Generic OnOff` real
-  verdrahtet**; alle anderen sind ein **Schatten-Zustand**. Helligkeit, Weißton,
-  Farbe und die 6 Modes (5 Presets + „Day Rhythm") laufen ausschließlich über
-  ein **Telink-Vendor-Modell** (`Company 0x0211`, Model `0x0000`), dessen
-  Opcode + Payload wir nur aus einem **Firmware-Dump** bekämen. Deshalb
-  exponieren wir die Lampe bewusst als **reines On/Off-Licht**. Details +
-  ausgeschlossene Wege siehe [Die Reise](#die-reise-damit-future-me-die-sackgassen-kennt).
+- ❌ **SIG Lightness / CTL / HSL / Level / Szenen** — die Firmware *quittiert*
+  diese Nachrichten mit korrektem Status und speichert die Werte sogar (im
+  Debug-Log sichtbar), **schickt sie aber nie per I²C an den GD32**. Von den
+  22 SIG-Modellen ist **nur `Generic OnOff` real verdrahtet**.
+- ✅ **Modi, Dimmen, VitaUp über das Vendor-Protokoll der Fernbedienung**
+  (`Company 0x0211`). Der entscheidende Trick: Die Firmware prüft die
+  **Quelladresse** der Nachricht (Log `is_match_group_id`) und nimmt
+  Vendor-Befehle **nur von `0x7FFF`** an — der Adresse der Fernbedienung.
+  Im eigenen Netz dürfen wir als `0x7FFF` senden, dann verhält sich die Lampe
+  exakt wie beim Tastendruck. Payload immer 8 Byte, `[tid][sub][…]`, ohne
+  Quittung:
+
+  | Funktion | Mesh-Nachricht | I²C an den GD32 |
+  |---|---|---|
+  | Modus (1 Refresh, 2 Energize, 3 Focus, 4 Relax, 5 Rest, 6 Auto Rhythm) | `C9 11 02` `[tid] 04 00 [modus] 00…` | `03 [modus] 00` |
+  | Dimmen (0 runter, 1 hoch, 2/3 = gehalten runter/hoch) | `C8 11 02` `[tid] 01 [schritt] 00…` | `01 [schritt] 00` |
+  | VitaUp umschalten | `E0 11 02` `[tid] 01 00 00…` | `09 [1\|0] 00` |
+  | An/Aus (Fernbedienung) | *(nicht gefunden — Generic OnOff reicht)* | `00 [1\|0] 00` |
+
+  Gehaltene Dimmtasten wiederholen den Befehl alle 0,5 s, eine
+  Loslass-Nachricht gibt es nicht. VitaUp ist ein **Toggle**: Den Zustand führt
+  das BLE-Modul selbst, HA kann ihn nicht kennen. Ob der GD32 das UV-Modul dann
+  wirklich einschaltet, hängt von weiteren Bedingungen ab (auf einer Testplatine
+  blieb es nach einem ersten erfolgreichen Lauf gesperrt — auch per
+  Fernbedienung; Ursache ungeklärt, evtl. Dosis-/Zeitlimit).
+- 🔶 **Absolute Helligkeit / Farbtemperatur** — Kandidaten gefunden
+  (`C8 … 07 00 [prozent]` loggt `lightness:(n)`, `C8 … 08 …` loggt eine
+  Farbtemperatur, `C8 … 02 …` erzeugt I²C `cmd 02`), sichtbare Wirkung aber
+  **nicht verifiziert**. Die Bridge bietet sie deshalb nicht an.
+- ⚠️ **Fernbedienung und eigenes Netz schließen sich aus.** Die Remote koppelt
+  nur eine unprovisionierte Lampe; nach `provision.py` reagiert die Lampe nicht
+  mehr auf sie (und umgekehrt).
+
+Details + ausgeschlossene Wege siehe
+[Die Reise](#die-reise-damit-future-me-die-sackgassen-kennt).
 
 ## Architektur
 
@@ -88,13 +125,20 @@ python3 skylight.py provision  # frisch ins Mesh aufnehmen
 ### MQTT-Bridge
 
 `mqtt_bridge.py` hält eine dauerhafte Proxy-Verbindung und meldet die Lampe per
-**HA-MQTT-Discovery** automatisch als `light.skylight` an (JSON-Schema, on/off).
+**HA-MQTT-Discovery** automatisch als `light.skylight` an (JSON-Schema, on/off
+mit den 6 Modi als **Effekte**) plus drei **Buttons**: Dim up, Dim down,
+VitaUp toggle.
 
 | Topic | Payload | |
 |---|---|---|
-| `skylight/set` | `{"state": "ON"｜"OFF"}` | Kommando von HA |
-| `skylight/state` | `{"state": "ON"｜"OFF"}` | Zustand (retained) |
+| `skylight/set` | `{"state": "ON"｜"OFF"}` oder `{"state": "ON", "effect": "Focus"}` | Kommando von HA |
+| `skylight/state` | `{"state": "ON"｜"OFF"[, "effect": …]}` | Zustand (retained) |
+| `skylight/button/<dim_up｜dim_down｜vitaup>` | beliebig | Button gedrückt |
 | `skylight/availability` | `online` / `offline` | LWT (retained) |
+
+Der gemeldete Effekt ist nur der zuletzt *gesendete* Modus — die Lampe meldet
+ihren Modus nicht zurück. Ein Effekt aus dem Aus-Zustand schaltet vorher per
+Generic OnOff ein.
 
 Konfiguration über Env-Variablen: `MQTT_HOST` (default `127.0.0.1`),
 `MQTT_USER` (default `skylight`), `MQTT_PASS` (default aus
